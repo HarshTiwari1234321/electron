@@ -61,7 +61,7 @@ machine-linux-medium: &machine-linux-medium
 
 machine-linux-2xlarge: &machine-linux-2xlarge
   <<: *docker-image
-  resource_class: 2xlarge
+  resource_class: 2xlarge+
 
 machine-mac: &machine-mac
   macos:
@@ -718,10 +718,8 @@ step-touch-sync-done: &step-touch-sync-done
 # If a cache is matched EXACTLY then the .circle-sync-done file contains "done"
 step-maybe-restore-src-cache: &step-maybe-restore-src-cache
   restore_cache:
-    paths:
-      - ./src
     keys:
-      - v5-src-cache-{{ arch }}-{{ checksum "src/electron/.depshash" }}
+      - v7-src-cache-{{ checksum "src/electron/.depshash" }}
     name: Restoring src cache
 
 # Restore exact or closest git cache based on the hash of DEPS and .circle-sync-done
@@ -732,8 +730,8 @@ step-maybe-restore-git-cache: &step-maybe-restore-git-cache
     paths:
       - ~/.gclient-cache
     keys:
-      - v2-gclient-cache-{{ arch }}-{{ checksum "src/electron/.circle-sync-done" }}-{{ checksum "src/electron/DEPS" }}
-      - v2-gclient-cache-{{ arch }}-{{ checksum "src/electron/.circle-sync-done" }}
+      - v2-gclient-cache-{{ checksum "src/electron/.circle-sync-done" }}-{{ checksum "src/electron/DEPS" }}
+      - v2-gclient-cache-{{ checksum "src/electron/.circle-sync-done" }}
     name: Conditionally restoring git cache
 
 step-set-git-cache-path: &step-set-git-cache-path
@@ -750,7 +748,7 @@ step-save-git-cache: &step-save-git-cache
   save_cache:
     paths:
       - ~/.gclient-cache
-    key: v2-gclient-cache-{{ arch }}-{{ checksum "src/electron/.circle-sync-done" }}-{{ checksum "src/electron/DEPS" }}
+    key: v2-gclient-cache-{{ checksum "src/electron/.circle-sync-done" }}-{{ checksum "src/electron/DEPS" }}
     name: Persisting git cache
 
 step-run-electron-only-hooks: &step-run-electron-only-hooks
@@ -784,8 +782,8 @@ step-minimize-workspace-size-from-checkout: &step-minimize-workspace-size-from-c
 step-save-src-cache: &step-save-src-cache
   save_cache:
     paths:
-      - ./src
-    key: v5-src-cache-{{ arch }}-{{ checksum "src/electron/.depshash" }}
+      - /portal
+    key: v7-src-cache-{{ checksum "/portal/src/electron/.depshash" }}
     name: Persisting src cache
 
 # Check for doc only change
@@ -878,40 +876,6 @@ steps-lint: &steps-lint
           node script/yarn install --frozen-lockfile
           node script/yarn lint
 
-steps-checkout-fast: &steps-checkout-fast
-  steps:
-    - *step-checkout-electron
-    - *step-check-for-doc-only-change
-    - *step-persist-doc-only-change
-    - *step-maybe-early-exit-doc-only-change
-    - *step-depot-tools-get
-    - *step-depot-tools-add-to-path
-    - *step-restore-brew-cache
-    - *step-get-more-space-on-mac
-    - *step-install-gnutar-on-mac
-
-    - *step-generate-deps-hash
-    - *step-touch-sync-done
-    - *step-maybe-restore-src-cache
-    - *step-maybe-restore-git-cache
-    - *step-set-git-cache-path
-    # This sync call only runs if .circle-sync-done is an EMPTY file
-    - *step-gclient-sync
-    # These next few steps reset Electron to the correct commit regardless of which cache was restored
-    - run:
-        name: Wipe Electron
-        command: rm -rf src/electron
-    - *step-checkout-electron
-    - *step-run-electron-only-hooks
-    - *step-generate-deps-hash-cleanly
-    - *step-mark-sync-done
-    - *step-minimize-workspace-size-from-checkout
-    - persist_to_workspace:
-        root: .
-        paths:
-          - depot_tools
-          - src
-
 steps-checkout-and-save-cache: &steps-checkout-and-save-cache
   steps:
     - *step-checkout-electron
@@ -926,7 +890,7 @@ steps-checkout-and-save-cache: &steps-checkout-and-save-cache
 
     - *step-generate-deps-hash
     - *step-touch-sync-done
-    - *step-maybe-restore-src-cache
+    - maybe-restore-portaled-src-cache
     - *step-maybe-restore-git-cache
     - *step-set-git-cache-path
     # This sync call only runs if .circle-sync-done is an EMPTY file
@@ -941,6 +905,13 @@ steps-checkout-and-save-cache: &steps-checkout-and-save-cache
     - *step-generate-deps-hash-cleanly
     - *step-mark-sync-done
     - *step-minimize-workspace-size-from-checkout
+    - *step-delete-git-directories
+    - run:
+        name: Move src folder to the cross-OS portal
+        command: |
+          sudo mkdir -p /portal
+          sudo chown -R $(id -u):$(id -g) /portal
+          mv ./src /portal
     - *step-save-src-cache
     - *step-save-brew-cache
 
@@ -967,7 +938,7 @@ steps-electron-ts-compile-for-doc-change: &steps-electron-ts-compile-for-doc-cha
     - *step-install-gnutar-on-mac
     - *step-generate-deps-hash
     - *step-touch-sync-done
-    - *step-maybe-restore-src-cache
+    - maybe-restore-portaled-src-cache
     - *step-maybe-restore-git-cache
     - *step-set-git-cache-path
     # This sync call only runs if .circle-sync-done is an EMPTY file
@@ -1491,12 +1462,31 @@ jobs:
     <<: *steps-electron-ts-compile-for-doc-change
 
   # Layer 1: Checkout.
+  linux-checkout:
+    <<: *machine-linux-2xlarge
+    environment:
+      <<: *env-linux-2xlarge
+      GCLIENT_EXTRA_ARGS: '--custom-var=checkout_arm=True --custom-var=checkout_arm64=True --custom-var=checkout_boto=True --custom-var=checkout_requests=True'
+    steps:
+      - electron-build:
+          persist: false
+          build: false
+          checkout: true
+          persist-checkout: true
+          restore-src-cache: false
+          preserve-vendor-dirs: true
+
   linux-checkout-fast:
     <<: *machine-linux-2xlarge
     environment:
       <<: *env-linux-2xlarge
       GCLIENT_EXTRA_ARGS: '--custom-var=checkout_arm=True --custom-var=checkout_arm64=True'
-    <<: *steps-checkout-fast
+    steps:
+      - electron-build:
+          persist: false
+          build: false
+          checkout: true
+          persist-checkout: true
 
   linux-checkout-and-save-cache:
     <<: *machine-linux-2xlarge
@@ -1510,26 +1500,58 @@ jobs:
     environment:
       <<: *env-linux-2xlarge
       GCLIENT_EXTRA_ARGS: '--custom-var=checkout_pyyaml=True'
-    <<: *steps-checkout-fast
+    steps:
+      - electron-build:
+          persist: false
+          build: false
+          checkout: true
+          persist-checkout: true
 
   linux-checkout-for-native-tests-with-no-patches:
     <<: *machine-linux-2xlarge
     environment:
       <<: *env-linux-2xlarge
       GCLIENT_EXTRA_ARGS: '--custom-var=apply_patches=False --custom-var=checkout_pyyaml=True'
-    <<: *steps-checkout-fast
+    steps:
+      - electron-build:
+          persist: false
+          build: false
+          checkout: true
+          persist-checkout: true
+
+  mac-checkout:
+    <<: *machine-linux-2xlarge
+    environment:
+      <<: *env-linux-2xlarge
+      <<: *env-testing-build
+      GCLIENT_EXTRA_ARGS: '--custom-var=checkout_mac=True --custom-var=host_os=mac --custom-var=checkout_boto=True --custom-var=checkout_requests=True'
+    steps:
+      - electron-build:
+          persist: false
+          build: false
+          checkout: true
+          persist-checkout: true
+          restore-src-cache: false
+          preserve-vendor-dirs: true
 
   mac-checkout-fast:
     <<: *machine-linux-2xlarge
     environment:
       <<: *env-linux-2xlarge
+      <<: *env-testing-build
       GCLIENT_EXTRA_ARGS: '--custom-var=checkout_mac=True --custom-var=host_os=mac'
-    <<: *steps-checkout-fast
+    steps:
+      - electron-build:
+          persist: false
+          build: false
+          checkout: true
+          persist-checkout: true
 
   mac-checkout-and-save-cache:
     <<: *machine-linux-2xlarge
     environment:
       <<: *env-linux-2xlarge
+      <<: *env-testing-build
       GCLIENT_EXTRA_ARGS: '--custom-var=checkout_mac=True --custom-var=host_os=mac'
     <<: *steps-checkout-and-save-cache
 
@@ -1756,6 +1778,7 @@ jobs:
       <<: *env-mac-large
       <<: *env-testing-build
       <<: *env-ninja-status
+      GCLIENT_EXTRA_ARGS: '--custom-var=checkout_mac=True --custom-var=host_os=mac'
     steps:
       - electron-build:
           persist: true
@@ -1808,8 +1831,8 @@ jobs:
       <<: *env-mac-large
       <<: *env-mas
       <<: *env-testing-build
-      <<: *env-enable-sccache
       <<: *env-ninja-status
+      GCLIENT_EXTRA_ARGS: '--custom-var=checkout_mac=True --custom-var=host_os=mac'
     steps:
       - electron-build:
           persist: true
@@ -2201,7 +2224,7 @@ workflows:
 
       - osx-testing:
           requires:
-            - mac-checkout-fast
+            - mac-checkout-and-save-cache
 
       - osx-testing-gn-check:
           requires:
@@ -2213,7 +2236,7 @@ workflows:
 
       - mas-testing:
           requires:
-            - mac-checkout-fast
+            - mac-checkout-and-save-cache
 
       - mas-testing-gn-check:
           requires:
